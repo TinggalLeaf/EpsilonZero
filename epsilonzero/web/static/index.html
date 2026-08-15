@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EpsilonZero · 五子棋 AI</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>Epsilon<span>Zero</span> · 五子棋 AI</h1>
+  <div class="status-dot" id="statusDot"></div>
+  <span class="muted" id="statusText">连接中…</span>
+  <nav>
+    <button data-tab="dashboard" class="active">总览</button>
+    <button data-tab="play">人机对局</button>
+    <button data-tab="charts">训练图表</button>
+    <button data-tab="control">训练控制</button>
+    <button data-tab="games">棋谱回放</button>
+  </nav>
+</header>
+<main>
+
+<!-- ============ 总览 ============ -->
+<section class="tab active" id="tab-dashboard">
+  <div class="cards">
+    <div class="card"><div class="label">状态</div><div class="value accent" id="cStatus">-</div></div>
+    <div class="card"><div class="label">训练迭代</div><div class="value" id="cIter">0</div></div>
+    <div class="card"><div class="label">自我对弈局数</div><div class="value" id="cGames">0</div></div>
+    <div class="card"><div class="label">经验池样本</div><div class="value" id="cBuffer">0</div></div>
+    <div class="card"><div class="label">ELO 评分</div><div class="value green" id="cElo">1200</div></div>
+    <div class="card"><div class="label">模型参数量</div><div class="value" id="cParams">-</div></div>
+    <div class="card"><div class="label">棋盘</div><div class="value" id="cBoard">15×15</div></div>
+    <div class="card"><div class="label">MCTS 模拟</div><div class="value" id="cSims">200</div></div>
+  </div>
+  <div class="panel">
+    <h2>当前进度</h2>
+    <div class="muted" id="progressLabel">空闲</div>
+    <div class="progress-bar"><div id="progressFill" style="width:0%"></div></div>
+  </div>
+  <div class="panel">
+    <h2>基础棋谱数据</h2>
+    <div id="recordsInfo" class="game-info">加载中…</div>
+  </div>
+</section>
+
+<!-- ============ 人机对局 ============ -->
+<section class="tab" id="tab-play">
+  <div class="board-wrap">
+    <canvas id="board"></canvas>
+    <div class="side">
+      <div class="panel">
+        <h2>对局设置</h2>
+        <div class="form-grid">
+          <label class="field">执子
+            <select id="playColor">
+              <option value="1">黑棋(先手)</option>
+              <option value="-1">白棋(后手)</option>
+            </select>
+          </label>
+          <label class="field">AI 思考深度 (MCTS 模拟数)
+            <select id="playSims">
+              <option value="30">30 (快速)</option>
+              <option value="100" selected>100 (标准)</option>
+              <option value="300">300 (强)</option>
+              <option value="800">800 (很强)</option>
+            </select>
+          </label>
+        </div>
+        <button class="btn primary" id="btnNewGame">新开一局</button>
+        <button class="btn" id="btnUndo">悔棋</button>
+      </div>
+      <div class="panel">
+        <h2>对局信息</h2>
+        <div class="game-info" id="gameInfo">点击"新开一局"开始对弈</div>
+        <h3>AI 候选着法 (访问次数)</h3>
+        <div class="top-moves" id="topMoves">-</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 训练图表 ============ -->
+<section class="tab" id="tab-charts">
+  <div class="panel" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+    <button class="btn" id="btnRefreshCharts">刷新图表</button>
+    <label style="display:flex;gap:6px;align-items:center" class="muted">
+      <input type="checkbox" id="autoRefresh" checked style="width:auto"> 实时刷新 (2秒)
+    </label>
+    <label style="display:flex;gap:6px;align-items:center" class="muted">
+      平滑窗口 <input type="number" id="smoothWin" value="10" min="1" max="100" style="width:60px">
+    </label>
+    <span class="muted" id="chartsUpdated"></span>
+  </div>
+  <div class="panel">
+    <h2>实时事件流</h2>
+    <div id="eventFeed" class="game-info" style="max-height:150px;overflow-y:auto;font-family:monospace;font-size:12px">等待事件…</div>
+  </div>
+  <div class="charts-grid">
+    <div class="chart-box"><h3>每步损失 (实时 · policy / value / total)</h3><canvas id="chStepLoss"></canvas></div>
+    <div class="chart-box"><h3>每步准确率 (策略 top1 一致率 / 价值符号准确率)</h3><canvas id="chStepAcc"></canvas></div>
+    <div class="chart-box"><h3>策略熵 每步 (探索程度)</h3><canvas id="chEntropy"></canvas></div>
+    <div class="chart-box"><h3>每轮损失汇总</h3><canvas id="chLoss"></canvas></div>
+    <div class="chart-box"><h3>ELO 评分曲线</h3><canvas id="chElo"></canvas></div>
+    <div class="chart-box"><h3>评估胜率 (对启发式 / 对随机)</h3><canvas id="chWinrate"></canvas></div>
+    <div class="chart-box"><h3>评估对局逐局结果 (对启发式)</h3><canvas id="chEvalGames"></canvas></div>
+    <div class="chart-box"><h3>自我对弈对局长度 (每局)</h3><canvas id="chGameLen"></canvas></div>
+    <div class="chart-box"><h3>黑方胜率走势 (20 局移动平均)</h3><canvas id="chBlackWin"></canvas></div>
+    <div class="chart-box"><h3>每局耗时 (秒)</h3><canvas id="chDuration"></canvas></div>
+    <div class="chart-box"><h3>自我对弈胜负分布</h3><canvas id="chWinner"></canvas></div>
+    <div class="chart-box"><h3>经验池大小 (每步)</h3><canvas id="chBuffer"></canvas></div>
+    <div class="chart-box"><h3>学习率</h3><canvas id="chLr"></canvas></div>
+    <div class="chart-box"><h3>棋谱预训练 损失 / 准确率</h3><canvas id="chPretrain"></canvas></div>
+  </div>
+</section>
+
+<!-- ============ 训练控制 ============ -->
+<section class="tab" id="tab-control">
+  <div class="panel">
+    <h2>训练控制</h2>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="btn primary" id="btnTrainStart">开始自我对弈训练</button>
+      <button class="btn danger" id="btnTrainStop">停止训练</button>
+      <label class="field" style="flex-direction:row;align-items:center;gap:6px">迭代轮数(0=无限)
+        <input type="number" id="trainIters" value="0" style="width:80px"></label>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>棋谱预训练 (基础训练)</h2>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="btn" id="btnAcquire">从网上下载棋谱</button>
+      <button class="btn primary" id="btnPretrain">用棋谱预训练</button>
+      <label class="field" style="flex-direction:row;align-items:center;gap:6px">轮数
+        <input type="number" id="pretrainEpochs" value="3" style="width:60px"></label>
+      <label class="field" style="flex-direction:row;align-items:center;gap:6px">最多棋局(0=全部)
+        <input type="number" id="pretrainMax" value="0" style="width:80px"></label>
+    </div>
+    <div class="muted" id="taskStatus" style="margin-top:8px"></div>
+  </div>
+  <div class="panel">
+    <h2>参数配置 <span class="muted">(修改棋盘大小/模型结构会重建模型)</span></h2>
+    <div class="form-grid">
+      <label class="field">棋盘大小<input type="number" id="cfgBoardSize"></label>
+      <label class="field">连子数<input type="number" id="cfgWinLen"></label>
+      <label class="field">MCTS 模拟数<input type="number" id="cfgSims"></label>
+      <label class="field">探索温度步数<input type="number" id="cfgTempMoves"></label>
+      <label class="field">批大小<input type="number" id="cfgBatch"></label>
+      <label class="field">学习率<input type="number" id="cfgLr" step="0.0001"></label>
+      <label class="field">每轮自对弈局数<input type="number" id="cfgGames"></label>
+      <label class="field">每轮训练步数<input type="number" id="cfgSteps"></label>
+      <label class="field">模型维度 d_model<input type="number" id="cfgDModel"></label>
+      <label class="field">层数 n_layers<input type="number" id="cfgLayers"></label>
+      <label class="field">注意力头数<input type="number" id="cfgHeads"></label>
+      <label class="field">FFN 维度<input type="number" id="cfgDff"></label>
+    </div>
+    <button class="btn primary" id="btnSaveConfig">保存配置</button>
+    <span class="muted" id="configMsg"></span>
+  </div>
+  <div class="panel">
+    <h2>检查点管理</h2>
+    <table id="ckptTable"><thead><tr><th>名称</th><th>大小</th><th>修改时间</th><th></th></tr></thead><tbody></tbody></table>
+  </div>
+  <div class="panel">
+    <h2>数据管理</h2>
+    <button class="btn danger" id="btnClearMetrics">清空训练指标</button>
+  </div>
+</section>
+
+<!-- ============ 棋谱回放 ============ -->
+<section class="tab" id="tab-games">
+  <div class="board-wrap">
+    <canvas id="replayBoard"></canvas>
+    <div class="side">
+      <div class="panel">
+        <h2>自我对弈棋谱</h2>
+        <table id="gamesTable"><thead><tr><th>时间</th><th>胜者</th><th>手数</th><th>棋盘</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h2>回放控制</h2>
+        <div class="replay-controls">
+          <button class="btn" id="rpFirst">|&lt;</button>
+          <button class="btn" id="rpPrev">&lt;</button>
+          <span id="rpStep" class="muted">0 / 0</span>
+          <button class="btn" id="rpNext">&gt;</button>
+          <button class="btn" id="rpLast">&gt;|</button>
+          <button class="btn" id="rpAuto">自动播放</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
