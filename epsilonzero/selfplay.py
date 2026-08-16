@@ -14,17 +14,31 @@ from .mcts import MCTS, counts_to_pi
 
 def play_self_game(mcts: MCTS, board_size: int, win_len: int, temp_moves: int = 12,
                    max_moves: int = 300, augment: bool = True,
-                   progress_cb: Optional[Callable[[int, int], None]] = None
+                   progress_cb: Optional[Callable[[int, int], None]] = None,
+                   white_sims_boost: float = 1.0
                    ) -> Tuple[list, dict]:
     """Play one self-play game.
 
     Returns (samples, game_info). samples: list of (state, pi, z) with D4
     augmentation applied. game_info: dict with moves, winner, etc.
+    white_sims_boost multiplies MCTS sims on white's turns (free-rule
+    first-move advantage compensation).
     """
     board = Board(size=board_size, win_len=win_len)
     traj: List[Tuple[np.ndarray, np.ndarray, int]] = []  # state, pi, player-to-move
+    hopeless = 0
+    resigned = False
+    base_sims = mcts.sims
     while not board.game_over() and len(board.history) < max_moves:
-        counts, _ = mcts.run(board, add_noise=True)
+        mcts.sims = int(base_sims * (white_sims_boost if board.current == WHITE
+                                     else 1.0))
+        counts, root = mcts.run(board, add_noise=True)
+        # early resignation: hopeless position for 2 consecutive moves
+        if root is not None and len(board.history) >= 10:
+            hopeless = hopeless + 1 if root.q < -0.985 else 0
+            if hopeless >= 2:
+                resigned = True
+                break
         temp = 1.0 if len(board.history) < temp_moves else 1e-3
         pi = counts_to_pi(counts, temp)
         state = np.array(board.encode(), dtype=np.float32)
@@ -34,7 +48,10 @@ def play_self_game(mcts: MCTS, board_size: int, win_len: int, temp_moves: int = 
         if progress_cb:
             progress_cb(len(board.history), max_moves)
 
-    if board.winner == 2 or not board.game_over():
+    if resigned:
+        winner = -board.current
+        outcome = {winner: 1.0, -winner: -1.0}
+    elif board.winner == 2 or not board.game_over():
         outcome = {BLACK: 0.0, WHITE: 0.0}
         winner = 0
     else:
@@ -67,6 +84,7 @@ def play_self_game(mcts: MCTS, board_size: int, win_len: int, temp_moves: int = 
         "num_moves": len(board.history),
         "board_size": board_size,
         "win_len": win_len,
+        "resigned": resigned,
         "time": time.time(),
     }
     return samples, info

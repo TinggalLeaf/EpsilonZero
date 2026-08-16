@@ -84,6 +84,27 @@ class Board:
     def game_over(self) -> bool:
         return self.winner != EMPTY
 
+    def winning_moves(self, player: int) -> List[int]:
+        """Empty cells where placing `player`'s stone completes a line of win_len."""
+        out = []
+        n = self.size
+        for i, v in enumerate(self.cells):
+            if v != EMPTY:
+                continue
+            r, c = self.rc(i)
+            for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
+                count = 1
+                for sgn in (1, -1):
+                    rr, cc = r + sgn * dr, c + sgn * dc
+                    while 0 <= rr < n and 0 <= cc < n and self.cells[rr * n + cc] == player:
+                        count += 1
+                        rr += sgn * dr
+                        cc += sgn * dc
+                if count >= self.win_len:
+                    out.append(i)
+                    break
+        return out
+
     # ---------- symmetry (D4 group) ----------
     def transform(self, k_rot: int, flip: bool) -> List[int]:
         """Return transformed cell list (for data augmentation)."""
@@ -110,12 +131,17 @@ class Board:
 
     # ---------- encoding for the network ----------
     def encode(self) -> List[float]:
-        """4 planes: current-player stones, opponent stones, last move, constant.
+        """4 planes: current-player stones, opponent stones, last move,
+        side-to-move (1.0 everywhere when the current player is black, else 0.0).
 
-        The 4th plane is a constant 1.0 (bias plane). Gomoku without forbidden
-        rules is fully color-symmetric, so an absolute "side-to-move" plane only
-        lets the network latch onto spurious color biases from self-play data
-        (observed: value net collapsed to "white always wins" via this plane).
+        Planes 1-2 are relative (self/opponent), so without plane 4 the network
+        cannot tell whether it is playing black or white. Free-rule Gomoku is
+        NOT color-symmetric in practice (first-move advantage: self-play black
+        wins ~93%), so a color-blind network learns a single "attacker" style
+        that only works for black — observed: AI played well as black but
+        hopelessly as white. The side-to-move plane lets it learn
+        color-specific strategy. Channel count is unchanged (4), so existing
+        checkpoints still load.
         """
         n2 = self.size * self.size
         out = [0.0] * (4 * n2)
@@ -127,8 +153,9 @@ class Board:
                 out[n2 + i] = 1.0
         if last >= 0:
             out[2 * n2 + last] = 1.0
-        for i in range(n2):
-            out[3 * n2 + i] = 1.0
+        if self.current == BLACK:
+            for i in range(n2):
+                out[3 * n2 + i] = 1.0
         return out
 
     def to_text(self) -> str:

@@ -18,7 +18,7 @@ import torch
 import torch.nn.functional as F
 
 from .config import Config, CHECKPOINT_DIR, METRICS_FILE, SELFPLAY_DIR, DATA_DIR
-from .game.board import Board, BLACK
+from .game.board import Board, BLACK, WHITE
 from .mcts import MCTS
 from .model.transformer import GomokuTransformer
 from .replay_buffer import ReplayBuffer
@@ -81,13 +81,18 @@ class Trainer:
         if not BUFFER_FILE.exists():
             return
         try:
-            d = np.load(BUFFER_FILE)
-            samples = [
-                (d["states"][i].astype(np.float32),
-                 d["pis"][i].astype(np.float32),
-                 float(d["zs"][i]))
-                for i in range(len(d["zs"]))
-            ]
+            with np.load(BUFFER_FILE) as d:
+                # Bind arrays ONCE: d["states"] on an NpzFile re-reads and
+                # re-decompresses the whole member on every access, so putting
+                # it in the per-sample loop makes loading O(n x file) — with a
+                # 100k buffer that is hours of pure CRC churn.
+                states, pis, zs = d["states"], d["pis"], d["zs"]
+                samples = [
+                    (states[i].astype(np.float32),
+                     pis[i].astype(np.float32),
+                     float(zs[i]))
+                    for i in range(len(zs))
+                ]
             self.buffer.add(samples)
         except Exception:
             pass
@@ -174,7 +179,10 @@ class Trainer:
     def ai_move(self, board: Board, simulations: Optional[int] = None,
                 temperature: float = 0.0) -> tuple[int, dict]:
         """Choose a move for the given board via MCTS. Returns (move, extra)."""
-        mcts = self.make_mcts(simulations)
+        sims = simulations or self.cfg.mcts_simulations
+        if board.current == WHITE:
+            sims = int(sims * self.cfg.white_sims_boost)
+        mcts = self.make_mcts(sims)
         counts, root = mcts.run(board, add_noise=False)
         if temperature > 1e-3:
             pi = counts / counts.sum() if counts.sum() else counts
@@ -229,7 +237,8 @@ class Trainer:
                                  "label": f"自我对弈 第{g+1}/{cfg.selfplay_games_per_iter}局"}
                 mcts = self.make_mcts()
                 samples, info = play_self_game(mcts, cfg.board_size, cfg.win_len,
-                                               cfg.temp_moves, cfg.max_game_moves)
+                                               cfg.temp_moves, cfg.max_game_moves,
+                                               white_sims_boost=cfg.white_sims_boost)
                 iter_samples.extend(samples)
                 self.total_games += 1
                 save_game(info, SELFPLAY_DIR)
@@ -355,6 +364,9 @@ class Trainer:
         while not board.game_over() and len(board.history) < self.cfg.max_game_moves:
             is_ai_turn = (board.current == BLACK) == ai_black
             if is_ai_turn:
+                mcts.sims = int(simulations *
+                                (self.cfg.white_sims_boost
+                                 if board.current == WHITE else 1.0))
                 counts, _ = mcts.run(board, add_noise=False)
                 move = int(np.argmax(counts))
             elif opponent == "random":
@@ -374,13 +386,14 @@ class Trainer:
 
     # ---------------- supervised pretrain from records ----------------
     def pretrain_from_records(self, records: List[dict], epochs: int = 3,
-                              progress_cb: Optional[Callable] = None) -> dict:
+                              progress_cb: Optional[Callable] = None,
+                              augment: bool = True) -> dict:
         """Behavior-clone downloaded/self-generated game records."""
         self._stop.clear()
         self.status = "pretraining"
         samples: List[tuple] = []
         for rec in records:
-            samples.extend(record_to_samples(rec, augment=True))
+            samples.extend(record_to_samples(rec, augment=augment))
         if not samples:
             self.status = "idle"
             return {"samples": 0, "epochs": 0, "final_loss": None}

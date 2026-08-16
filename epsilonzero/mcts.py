@@ -56,11 +56,38 @@ class MCTS:
 
     # ---------- search ----------
     def run(self, board: Board, add_noise: bool = False) -> np.ndarray:
-        """Return visit-count distribution over all cells (size*size)."""
+        """Return visit-count distribution over all cells (size*size).
+
+        Depth-1/2 tactical forcing at the root (standard in gomoku engines):
+        take an immediate win if one exists; block the opponent's immediate
+        win if there is exactly one threat; block moves that would give the
+        opponent an open four (unblockable next move). This is just game-tree
+        knowledge, not extra domain bias — MCTS would discover it given
+        enough sims.
+        """
+        from .heuristic import candidate_moves, evaluate_move, OPEN_FOUR
+        my_wins = board.winning_moves(board.current)
+        if my_wins:
+            counts = np.zeros(self.size * self.size, dtype=np.float32)
+            for m in my_wins:
+                counts[m] = 1.0
+            return counts, None
+        opp = -board.current
+        opp_wins = board.winning_moves(opp)
+        forced = set(opp_wins) if len(opp_wins) == 1 else None
+        if forced is None:
+            # depth-2: cells where the opponent would create an open four
+            o4 = [m for m in candidate_moves(board)
+                  if evaluate_move(board, m, opp) >= OPEN_FOUR]
+            if o4:
+                forced = set(o4)
+
         root = Node(0.0, board.current)
         policy, _ = self._eval(board)
         legal = board.legal_moves()
-        if add_noise and len(legal) > 0:
+        if forced is not None:
+            legal = [m for m in legal if m in forced]
+        if add_noise and len(legal) > 1:
             noise = np.random.dirichlet([self.dir_alpha] * len(legal))
             for i, m in enumerate(legal):
                 p = (1 - self.dir_eps) * policy[m] + self.dir_eps * noise[i]

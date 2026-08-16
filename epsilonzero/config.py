@@ -31,8 +31,11 @@ class Config:
     # mcts
     mcts_simulations: int = 200
     c_puct: float = 1.5
-    dirichlet_alpha: float = 0.3
+    dirichlet_alpha: float = 0.15
     dirichlet_eps: float = 0.25
+    white_sims_boost: float = 2.0  # white moves get Nx MCTS sims: compensates
+                                   # free-rule first-move advantage so white
+                                   # stops being the "dumb" side
     temp_moves: int = 12          # first N moves sampled by temperature
     # training
     batch_size: int = 64
