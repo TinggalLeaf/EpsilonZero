@@ -36,6 +36,8 @@ class Config:
     white_sims_boost: float = 2.0  # white moves get Nx MCTS sims: compensates
                                    # free-rule first-move advantage so white
                                    # stops being the "dumb" side
+    mcts_eval_batch: int = 16      # leaf evaluations per batched forward pass
+                                   # (wave batching; 1 = classic serial MCTS)
     temp_moves: int = 12          # first N moves sampled by temperature
     # training
     batch_size: int = 64

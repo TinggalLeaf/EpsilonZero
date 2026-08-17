@@ -32,6 +32,8 @@ class ConfigUpdate(BaseModel):
     mcts_simulations: Optional[int] = None
     c_puct: Optional[float] = None
     dirichlet_alpha: Optional[float] = None
+    white_sims_boost: Optional[float] = None
+    mcts_eval_batch: Optional[int] = None
     temp_moves: Optional[int] = None
     batch_size: Optional[int] = None
     lr: Optional[float] = None

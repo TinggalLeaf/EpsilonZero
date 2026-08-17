@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+import numpy as np
+
 EMPTY, BLACK, WHITE = 0, 1, -1
 
 
@@ -130,7 +132,7 @@ class Board:
         return r * n + c
 
     # ---------- encoding for the network ----------
-    def encode(self) -> List[float]:
+    def encode(self) -> np.ndarray:
         """4 planes: current-player stones, opponent stones, last move,
         side-to-move (1.0 everywhere when the current player is black, else 0.0).
 
@@ -142,21 +144,21 @@ class Board:
         hopelessly as white. The side-to-move plane lets it learn
         color-specific strategy. Channel count is unchanged (4), so existing
         checkpoints still load.
+
+        Vectorized (numpy) — this is the hottest function in the system
+        (called once per MCTS simulation, tens of thousands of times per
+        training iteration).
         """
         n2 = self.size * self.size
-        out = [0.0] * (4 * n2)
-        last = self.history[-1] if self.history else -1
-        for i, v in enumerate(self.cells):
-            if v == self.current:
-                out[i] = 1.0
-            elif v == -self.current:
-                out[n2 + i] = 1.0
-        if last >= 0:
-            out[2 * n2 + last] = 1.0
+        cells = np.asarray(self.cells, dtype=np.int8)
+        out = np.zeros((4, n2), dtype=np.float32)
+        out[0] = (cells == self.current)
+        out[1] = (cells == -self.current)
+        if self.history:
+            out[2, self.history[-1]] = 1.0
         if self.current == BLACK:
-            for i in range(n2):
-                out[3 * n2 + i] = 1.0
-        return out
+            out[3] = 1.0
+        return out.reshape(-1)
 
     def to_text(self) -> str:
         sym = {EMPTY: ".", BLACK: "X", WHITE: "O"}

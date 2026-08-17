@@ -31,7 +31,7 @@ class Node:
 class MCTS:
     def __init__(self, net, board_size: int, win_len: int, simulations: int = 200,
                  c_puct: float = 1.5, dir_alpha: float = 0.3, dir_eps: float = 0.25,
-                 device: str = "cpu"):
+                 device: str = "cpu", eval_batch: int = 16):
         self.net = net
         self.size = board_size
         self.win_len = win_len
@@ -40,19 +40,28 @@ class MCTS:
         self.dir_alpha = dir_alpha
         self.dir_eps = dir_eps
         self.device = device
+        self.eval_batch = max(1, eval_batch)
 
     # ---------- network ----------
     @torch.no_grad()
     def _eval(self, board: Board) -> Tuple[np.ndarray, float]:
-        x = torch.tensor(board.encode(), dtype=torch.float32,
-                         device=self.device).view(1, 4, self.size, self.size)
-        logits, value = self.net(x)
-        mask = torch.zeros(1, self.size * self.size, device=self.device)
-        legal = board.legal_moves()
-        mask[0, legal] = 1.0
+        return self._eval_batch([board])[0]
+
+    @torch.no_grad()
+    def _eval_batch(self, boards: List[Board]) -> List[Tuple[np.ndarray, float]]:
+        """One forward pass for many leaf boards (the whole point of wave
+        batching: a B=16 forward costs about the same as B=1 on GPU)."""
+        n = self.size
+        x = torch.tensor(np.stack([b.encode() for b in boards]),
+                         dtype=torch.float32, device=self.device).view(-1, 4, n, n)
+        logits, values = self.net(x)
+        mask = torch.zeros(len(boards), n * n, device=self.device)
+        for i, b in enumerate(boards):
+            mask[i, b.legal_moves()] = 1.0
         logits = logits.masked_fill(mask <= 0, -1e9)
-        policy = torch.softmax(logits, dim=-1)[0].cpu().numpy()
-        return policy, float(value.item())
+        policies = torch.softmax(logits, dim=-1).cpu().numpy()
+        vals = values.reshape(-1).cpu().numpy()
+        return [(policies[i], float(vals[i])) for i in range(len(boards))]
 
     # ---------- search ----------
     def run(self, board: Board, add_noise: bool = False) -> np.ndarray:
@@ -96,31 +105,53 @@ class MCTS:
             for m in legal:
                 root.children[m] = Node(float(policy[m]), -board.current)
 
-        for _ in range(self.sims):
-            b = board.copy()
-            node = root
-            path: List[Node] = [node]
-            # selection
-            while node.is_expanded() and not b.game_over():
-                move, node = self._select(node)
-                b.play(move)
-                path.append(node)
-            # expansion + evaluation
-            if b.game_over():
-                if b.winner == 2:
-                    value = 0.0
+        # Wave-batched simulations with virtual loss: each wave selects
+        # `eval_batch` leaf positions (virtual loss keeps the wave from
+        # collapsing onto one leaf), then evaluates them in a single batched
+        # forward pass. Search semantics are unchanged apart from the virtual
+        # loss, which is corrected exactly at backprop time.
+        VL = 1.0  # virtual loss, applied from each node's own perspective
+        sims_done = 0
+        while sims_done < self.sims:
+            wave = min(self.eval_batch, self.sims - sims_done)
+            pending: List[Tuple[Board, Node, List[Node]]] = []
+            for _ in range(wave):
+                b = board.copy()
+                node = root
+                path: List[Node] = [node]
+                # selection
+                while node.is_expanded() and not b.game_over():
+                    move, node = self._select(node)
+                    b.play(move)
+                    path.append(node)
+                if b.game_over():
+                    # terminal: exact value, backprop immediately (no VL)
+                    if b.winner == 2:
+                        value = 0.0
+                    else:
+                        # player to move at this terminal node is the one who lost
+                        value = -1.0
+                    for n in path:
+                        n.visit += 1
+                        n.value_sum += value if n.to_play == path[-1].to_play \
+                            else -value
                 else:
-                    # player to move at this terminal node is the one who lost
-                    value = -1.0
-            else:
-                policy, v = self._eval(b)
-                for m in b.legal_moves():
-                    node.children[m] = Node(float(policy[m]), -b.current)
-                value = v  # value from perspective of player to move at leaf
-            # backprop: value is for path[-1].to_play
-            for n in path:
-                n.visit += 1
-                n.value_sum += value if n.to_play == path[-1].to_play else -value
+                    # reserve this path with virtual loss, queue for batch eval
+                    for n in path:
+                        n.visit += 1
+                        n.value_sum += VL
+                    pending.append((b, node, path))
+            if pending:
+                results = self._eval_batch([p[0] for p in pending])
+                for (b, node, path), (policy, v) in zip(pending, results):
+                    for m in b.legal_moves():
+                        node.children[m] = Node(float(policy[m]), -b.current)
+                    # backprop: value is for path[-1].to_play; subtract the VL
+                    # reservation so the net effect is the true value
+                    for n in path:
+                        n.value_sum += (v - VL) if n.to_play == path[-1].to_play \
+                            else (-v - VL)
+            sims_done += wave
 
         counts = np.zeros(self.size * self.size, dtype=np.float32)
         for m, child in root.children.items():

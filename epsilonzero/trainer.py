@@ -174,7 +174,7 @@ class Trainer:
         return MCTS(net, self.cfg.board_size, self.cfg.win_len,
                     simulations or self.cfg.mcts_simulations,
                     self.cfg.c_puct, self.cfg.dirichlet_alpha, self.cfg.dirichlet_eps,
-                    device=self.device)
+                    device=self.device, eval_batch=self.cfg.mcts_eval_batch)
 
     def ai_move(self, board: Board, simulations: Optional[int] = None,
                 temperature: float = 0.0) -> tuple[int, dict]:
